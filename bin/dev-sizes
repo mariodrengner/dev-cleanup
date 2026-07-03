@@ -2,10 +2,10 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: dev-sizes [<verzeichnis>]\n'
-  printf 'Analysiert Speicherverbrauch durch Build-Artefakte. Löscht nichts.\n'
-  printf '  <verzeichnis>  Zu analysierendes Verzeichnis (Standard: ~/dev)\n'
-  printf '  --help, -h     Diese Hilfe anzeigen\n'
+  printf 'Usage: dev-sizes [<directory>]\n'
+  printf 'Analyzes disk usage of build artifacts. Deletes nothing.\n'
+  printf '  <directory>  Directory to analyze (default: ~/dev)\n'
+  printf '  --help, -h   Show this help\n'
   exit "${1:-1}"
 }
 
@@ -13,7 +13,7 @@ TARGET="$HOME/dev"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage 0 ;;
-    -*)        printf 'Unbekanntes Flag: %s\n' "$1"; usage ;;
+    -*)        printf 'Unknown flag: %s\n' "$1"; usage ;;
     *)         TARGET="$1" ;;
   esac
   shift
@@ -30,7 +30,7 @@ format_size() {
   }'
 }
 
-[[ -d "$TARGET" ]] || { printf 'Verzeichnis nicht gefunden: %s\n' "$TARGET"; exit 1; }
+[[ -d "$TARGET" ]] || { printf 'Directory not found: %s\n' "$TARGET"; exit 1; }
 
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
@@ -59,7 +59,7 @@ printf 'Scanning %s...' "$TARGET" >&2
 | while IFS= read -r -d '' dir; do
     case "$dir" in
       *$'\n'*|*$'\t'*)
-        printf '\r\033[KÜbersprungen (Steuerzeichen im Pfad): %q\n' "$dir" >&2
+        printf '\r\033[KSkipped (control characters in path): %q\n' "$dir" >&2
         continue ;;
     esac
     kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
@@ -69,12 +69,12 @@ printf 'Scanning %s...' "$TARGET" >&2
     project="$TARGET/${rel%%/*}"
     printf '%s\t%s\t%s\n' "$kb" "$name" "$project"
     _n=$((_n + 1))
-    printf '\rScanning %s... (%d gefunden)' "$TARGET" "$_n" >&2
+    printf '\rScanning %s... (%d found)' "$TARGET" "$_n" >&2
   done > "$data_file"
 printf '\r\033[K' >&2
 
 # --- Section 1: By type ---
-printf '\n%b── Artefakte nach Typ ───────────────────────────%b\n' "$BOLD" "$RESET"
+printf '\n%b── Artifacts by type ────────────────────────────%b\n' "$BOLD" "$RESET"
 
 type_file="$tmpdir/type"
 awk -F'\t' '{sizes[$2]+=$1; counts[$2]++} END {
@@ -83,8 +83,8 @@ awk -F'\t' '{sizes[$2]+=$1; counts[$2]++} END {
 
 grand_total=0
 while IFS=$'\t' read -r kb name count; do
-  unit="Verzeichnisse"
-  [[ "$count" -eq 1 ]] && unit="Verzeichnis"
+  unit="directories"
+  [[ "$count" -eq 1 ]] && unit="directory"
   cond=""
   case "$name" in
     dist|build|out|vendor|deps|obj|venv|target|.build|_build) cond=" *" ;;
@@ -93,11 +93,11 @@ while IFS=$'\t' read -r kb name count; do
   grand_total=$((grand_total + kb))
 done < "$type_file"
 
-printf '\n  %bTotal Artefakte: %s%b\n' "$BOLD" "$(format_size "$grand_total")" "$RESET"
-printf '  * konditional: dev-clean löscht nur bei Marker-Datei oder gitignore-Treffer\n'
+printf '\n  %bTotal artifacts: %s%b\n' "$BOLD" "$(format_size "$grand_total")" "$RESET"
+printf '  * conditional: dev-clean only deletes these on marker file or gitignore match\n'
 
 # --- Section 2: Per project ---
-printf '\n%b── Pro Projekt (mit Artefakten) ─────────────────%b\n' "$BOLD" "$RESET"
+printf '\n%b── Per project (with artifacts) ─────────────────%b\n' "$BOLD" "$RESET"
 
 proj_file="$tmpdir/proj"
 awk -F'\t' '{sizes[$3]+=$1} END {
@@ -126,11 +126,11 @@ while IFS=$'\t' read -r proj_kb project; do
 done < "$proj_file"
 
 # --- Section 3: Totals ---
-printf 'Berechne Gesamtgröße...' >&2
+printf 'Calculating total size...' >&2
 dev_total=$(du -sk "$TARGET" 2>/dev/null | awk '{print $1}')
 printf '\r\033[K' >&2
 pct=$(LC_NUMERIC=C awk -v art="$grand_total" -v tot="$dev_total" 'BEGIN { printf "%.0f", (tot>0 ? art/tot*100 : 0) }')
-printf '\n%b── Gesamt ────────────────────────────────────────%b\n' "$BOLD" "$RESET"
-printf '  Artefakte:   %s (%s%% von %s)\n' \
+printf '\n%b── Total ─────────────────────────────────────────%b\n' "$BOLD" "$RESET"
+printf '  Artifacts:  %s (%s%% of %s)\n' \
   "$(format_size "$grand_total")" "$pct" "$(format_size "$dev_total")"
 printf '  %s total: %s\n' "$TARGET" "$(format_size "$dev_total")"
