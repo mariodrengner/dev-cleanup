@@ -22,13 +22,13 @@ format_size() {
 }
 
 usage() {
-  printf 'Usage: dev-clean [--delete [--safe|--fast]] [<verzeichnis>]\n'
-  printf 'Listet und entfernt Build-Artefakte. Ohne --delete nur Dry-Run.\n'
-  printf '  <verzeichnis>  Zu bereinigendes Verzeichnis (Standard: ~/dev)\n'
-  printf '  --delete       Tatsächlich löschen (Standard: Dry-Run)\n'
-  printf '  --safe         Nutzt trash, wiederherstellbar (Standard bei --delete)\n'
-  printf '  --fast         Nutzt rm -rf (mit Warnung, nicht wiederherstellbar)\n'
-  printf '  --help, -h     Diese Hilfe anzeigen\n'
+  printf 'Usage: dev-clean [--delete [--safe|--fast]] [<directory>]\n'
+  printf 'Lists and removes build artifacts. Dry-run unless --delete is given.\n'
+  printf '  <directory>  Directory to clean (default: ~/dev)\n'
+  printf '  --delete     Actually delete (default: dry-run)\n'
+  printf '  --safe       Use trash, recoverable (default with --delete)\n'
+  printf '  --fast       Use rm -rf (with warning, not recoverable)\n'
+  printf '  --help, -h   Show this help\n'
   exit "${1:-1}"
 }
 
@@ -38,32 +38,32 @@ while [[ $# -gt 0 ]]; do
     --safe)    DELETE_MODE="safe"; MODE_FLAG_SET=true ;;
     --fast)    DELETE_MODE="fast"; MODE_FLAG_SET=true ;;
     --help|-h) usage 0 ;;
-    -*)        printf 'Unbekanntes Flag: %s\n' "$1"; usage ;;
+    -*)        printf 'Unknown flag: %s\n' "$1"; usage ;;
     *)         TARGET="$1" ;;
   esac
   shift
 done
 
 [[ "$TARGET" != "/" ]] && TARGET="${TARGET%/}"
-[[ -d "$TARGET" ]] || { printf 'Verzeichnis nicht gefunden: %s\n' "$TARGET"; exit 1; }
+[[ -d "$TARGET" ]] || { printf 'Directory not found: %s\n' "$TARGET"; exit 1; }
 TARGET=$(cd "$TARGET" && pwd)
 
 if [[ "$TARGET" == "/" || "$TARGET" == "$HOME" ]]; then
-  printf '%bAbbruch:%b %s ist als Ziel nicht erlaubt.\n' "$RED" "$RESET" "$TARGET"
+  printf '%bError:%b %s is not allowed as a target.\n' "$RED" "$RESET" "$TARGET"
   exit 1
 fi
 if [[ "$TARGET" != "$HOME"/* && "$DRY_RUN" == "false" ]]; then
-  printf '%bWarnung:%b Ziel liegt außerhalb von %s: %s\n' "$YELLOW" "$RESET" "$HOME" "$TARGET"
-  read -r -p "Trotzdem fortfahren? [y/N] " confirm
-  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Abgebrochen."; exit 0; }
+  printf '%bWarning:%b target is outside %s: %s\n' "$YELLOW" "$RESET" "$HOME" "$TARGET"
+  read -r -p "Continue anyway? [y/N] " confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
 fi
 
 if [[ "$DRY_RUN" == "true" && "$MODE_FLAG_SET" == "true" ]]; then
-  printf '%bHinweis:%b --safe/--fast wirken nur zusammen mit --delete (aktuell Dry-Run).\n' "$YELLOW" "$RESET"
+  printf '%bNote:%b --safe/--fast only take effect together with --delete (currently dry-run).\n' "$YELLOW" "$RESET"
 fi
 
 if [[ "$DRY_RUN" == "false" && "$DELETE_MODE" == "safe" ]] && ! command -v trash &>/dev/null; then
-  printf '%bFehler:%b trash ist nicht installiert (brew install trash) — oder --fast verwenden.\n' "$RED" "$RESET"
+  printf '%bError:%b trash is not installed (macOS: brew install trash, Linux: trash-cli) — or use --fast.\n' "$RED" "$RESET"
   exit 1
 fi
 
@@ -120,20 +120,20 @@ printf 'Scanning %s...' "$TARGET" >&2
     # Paths with control characters would corrupt the tab/newline-separated data file
     case "$dir" in
       *$'\n'*|*$'\t'*)
-        printf '\r\033[K%bÜbersprungen (Steuerzeichen im Pfad):%b %q\n' "$YELLOW" "$RESET" "$dir" >&2
+        printf '\r\033[K%bSkipped (control characters in path):%b %q\n' "$YELLOW" "$RESET" "$dir" >&2
         continue ;;
     esac
     kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
     [[ -n "$kb" ]] || kb=0
     printf '%s\tdelete\t%s\n' "$kb" "$dir"
     _n=$((_n + 1))
-    printf '\rScanning %s... (%d gefunden)' "$TARGET" "$_n" >&2
+    printf '\rScanning %s... (%d found)' "$TARGET" "$_n" >&2
   done >> "$data_file"
 printf '\r\033[K' >&2
 
 # Conditional artifacts (generic names): deleted only if a stack marker matches OR the dir is gitignored
 _n=0
-printf 'Prüfe konditionale Ordner...' >&2
+printf 'Checking conditional directories...' >&2
 (find "$TARGET" -type d \( \
     -name "node_modules"     -o -name ".next"          -o -name ".nuxt"         \
     -o -name ".output"       -o -name ".nitro"         -o -name ".turbo"        \
@@ -155,7 +155,7 @@ printf 'Prüfe konditionale Ordner...' >&2
 | while IFS= read -r -d '' dir; do
     case "$dir" in
       *$'\n'*|*$'\t'*)
-        printf '\r\033[K%bÜbersprungen (Steuerzeichen im Pfad):%b %q\n' "$YELLOW" "$RESET" "$dir" >&2
+        printf '\r\033[K%bSkipped (control characters in path):%b %q\n' "$YELLOW" "$RESET" "$dir" >&2
         continue ;;
     esac
     kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
@@ -166,15 +166,16 @@ printf 'Prüfe konditionale Ordner...' >&2
       printf '%s\tskip\t%s\n' "$kb" "$dir"
     fi
     _n=$((_n + 1))
-    printf '\rPrüfe konditionale Ordner... (%d geprüft)' "$_n" >&2
+    printf '\rChecking conditional directories... (%d checked)' "$_n" >&2
   done >> "$data_file"
 printf '\r\033[K' >&2
 
 total_kb=$(awk -F'\t' '$2=="delete"{s+=$1} END{print s+0}' "$data_file")
 total_count=$(awk -F'\t' '$2=="delete"{c++} END{print c+0}' "$data_file")
+total_skip=$(awk -F'\t' '$2=="skip"{c++} END{print c+0}' "$data_file")
 
-if [[ "$total_count" -eq 0 ]]; then
-  printf '\n%bKeine Artefakte gefunden.%b\n' "$GREEN" "$RESET"
+if [[ "$total_count" -eq 0 && "$total_skip" -eq 0 ]]; then
+  printf '\n%bNo artifacts found.%b\n' "$GREEN" "$RESET"
   exit 0
 fi
 
@@ -191,7 +192,7 @@ awk -F'\t' '$2=="delete"' "$data_file" | sort -rn | while IFS=$'\t' read -r kb _
 done
 
 awk -F'\t' '$2=="skip"' "$data_file" | sort -rn | while IFS=$'\t' read -r kb _ dir; do
-  printf '  %6s  %b[skipped — weder Marker noch gitignored]%b  %s\n' \
+  printf '  %6s  %b[skipped — no marker, not gitignored]%b  %s\n' \
     "$(format_size "$kb")" "$DIM" "$RESET" "$(display_path "$dir")"
 done
 
@@ -204,12 +205,12 @@ fi
 
 # Delete mode
 if [[ "$DELETE_MODE" == "fast" ]]; then
-  printf '\n%b%bWARNUNG: rm -rf wird verwendet — NICHT wiederherstellbar!%b\n' \
+  printf '\n%b%bWARNING: rm -rf will be used — NOT recoverable!%b\n' \
     "$BOLD" "$RED" "$RESET"
 fi
 
-read -r -p "$(printf '%d Verzeichnisse löschen? [y/N] ' "$total_count")" confirm
-[[ "$confirm" =~ ^[Yy]$ ]] || { echo "Abgebrochen."; exit 0; }
+read -r -p "$(printf 'Delete %d directories? [y/N] ' "$total_count")" confirm
+[[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
 
 # cut -f3- keeps the full path even if it contains further tab-like field content
 awk -F'\t' '$2=="delete"' "$data_file" | cut -f3- > "$tmpdir/to_delete"
@@ -221,23 +222,23 @@ while IFS= read -r dir; do
   if [[ "$DELETE_MODE" == "fast" ]]; then
     if rm -rf "$dir" 2>/dev/null; then
       deleted=$((deleted + 1))
-      printf '\rLösche... (%d/%d)' "$deleted" "$total_count" >&2
+      printf '\rDeleting... (%d/%d)' "$deleted" "$total_count" >&2
     else
-      printf '%bFehler:%b %s\n' "$RED" "$RESET" "$(display_path "$dir")"
+      printf '%bError:%b %s\n' "$RED" "$RESET" "$(display_path "$dir")"
       failed=$((failed + 1))
     fi
   else
     if trash "$dir" 2>/dev/null; then
       deleted=$((deleted + 1))
-      printf '\rLösche... (%d/%d)' "$deleted" "$total_count" >&2
+      printf '\rDeleting... (%d/%d)' "$deleted" "$total_count" >&2
     else
-      printf '%bFehler:%b %s\n' "$RED" "$RESET" "$(display_path "$dir")"
+      printf '%bError:%b %s\n' "$RED" "$RESET" "$(display_path "$dir")"
       failed=$((failed + 1))
     fi
   fi
 done < "$tmpdir/to_delete"
 printf '\r\033[K' >&2
 
-printf '\n%b%d Verzeichnisse gelöscht%b' "$GREEN" "$deleted" "$RESET"
-[[ "$failed" -gt 0 ]] && printf ', %b%d Fehler%b' "$RED" "$failed" "$RESET"
+printf '\n%b%d directories deleted%b' "$GREEN" "$deleted" "$RESET"
+[[ "$failed" -gt 0 ]] && printf ', %b%d errors%b' "$RED" "$failed" "$RESET"
 printf '\n'
