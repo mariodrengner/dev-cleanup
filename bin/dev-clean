@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET="$HOME/dev"
+DRY_RUN=true
+DELETE_MODE="safe"
+MODE_FLAG_SET=false
+
+BOLD='\033[1m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+format_size() {
+  LC_NUMERIC=C awk -v kb="$1" 'BEGIN {
+    if (kb >= 1048576) printf "%.1fG\n", kb/1048576
+    else if (kb >= 1024) printf "%.1fM\n", kb/1024
+    else printf "%dK\n", kb
+  }'
+}
+
+usage() {
+  printf 'Usage: dev-clean [--delete [--safe|--fast]] [<verzeichnis>]\n'
+  printf 'Listet und entfernt Build-Artefakte. Ohne --delete nur Dry-Run.\n'
+  printf '  <verzeichnis>  Zu bereinigendes Verzeichnis (Standard: ~/dev)\n'
+  printf '  --delete       Tatsächlich löschen (Standard: Dry-Run)\n'
+  printf '  --safe         Nutzt trash, wiederherstellbar (Standard bei --delete)\n'
+  printf '  --fast         Nutzt rm -rf (mit Warnung, nicht wiederherstellbar)\n'
+  printf '  --help, -h     Diese Hilfe anzeigen\n'
+  exit "${1:-1}"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --delete)  DRY_RUN=false ;;
+    --safe)    DELETE_MODE="safe"; MODE_FLAG_SET=true ;;
+    --fast)    DELETE_MODE="fast"; MODE_FLAG_SET=true ;;
+    --help|-h) usage 0 ;;
+    -*)        printf 'Unbekanntes Flag: %s\n' "$1"; usage ;;
+    *)         TARGET="$1" ;;
+  esac
+  shift
+done
+
+[[ "$TARGET" != "/" ]] && TARGET="${TARGET%/}"
+[[ -d "$TARGET" ]] || { printf 'Verzeichnis nicht gefunden: %s\n' "$TARGET"; exit 1; }
+TARGET=$(cd "$TARGET" && pwd)
+
+if [[ "$TARGET" == "/" || "$TARGET" == "$HOME" ]]; then
+  printf '%bAbbruch:%b %s ist als Ziel nicht erlaubt.\n' "$RED" "$RESET" "$TARGET"
+  exit 1
+fi
+if [[ "$TARGET" != "$HOME"/* && "$DRY_RUN" == "false" ]]; then
+  printf '%bWarnung:%b Ziel liegt außerhalb von %s: %s\n' "$YELLOW" "$RESET" "$HOME" "$TARGET"
+  read -r -p "Trotzdem fortfahren? [y/N] " confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Abgebrochen."; exit 0; }
+fi
+
+if [[ "$DRY_RUN" == "true" && "$MODE_FLAG_SET" == "true" ]]; then
+  printf '%bHinweis:%b --safe/--fast wirken nur zusammen mit --delete (aktuell Dry-Run).\n' "$YELLOW" "$RESET"
+fi
+
+if [[ "$DRY_RUN" == "false" && "$DELETE_MODE" == "safe" ]] && ! command -v trash &>/dev/null; then
+  printf '%bFehler:%b trash ist nicht installiert (brew install trash) — oder --fast verwenden.\n' "$RED" "$RESET"
+  exit 1
+fi
+
+# Returns 0 if the directory name is ignored by git (project .gitignore, global core.excludesFile, or .git/info/exclude)
+is_gitignored() {
+  local dir="$1"
+  git -C "$(dirname "$dir")" rev-parse --git-dir &>/dev/null || return 1
+  git -C "$(dirname "$dir")" check-ignore -q "$(basename "$dir")" 2>/dev/null
+}
+
+# Returns 0 if a stack-specific marker file identifies the directory as a build artifact
+has_marker() {
+  local dir="$1" name parent
+  name=$(basename "$dir")
+  parent=$(dirname "$dir")
+  case "$name" in
+    vendor)      [[ -f "$parent/composer.json" || -f "$parent/go.mod" || -f "$parent/Gemfile" ]] ;;
+    deps|_build) [[ -f "$parent/mix.exs" ]] ;;
+    venv)        [[ -f "$dir/pyvenv.cfg" ]] ;;
+    target)      [[ -f "$parent/Cargo.toml" || -f "$parent/pom.xml" ]] ;;
+    obj)         compgen -G "$parent/*.csproj" >/dev/null || compgen -G "$parent/*.fsproj" >/dev/null ;;
+    .build)      [[ -f "$parent/Package.swift" ]] ;;
+    *)           return 1 ;;
+  esac
+}
+
+# Replaces non-printable characters so directory names cannot inject terminal escapes
+display_path() {
+  printf '%s' "${1//[![:print:]]/?}"
+}
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+data_file="$tmpdir/data"
+touch "$data_file"
+
+# Always-delete artifacts (unambiguous names)
+_n=0
+printf 'Scanning %s...' "$TARGET" >&2
+(find "$TARGET" -type d \( \
+    -name "node_modules"     -o -name ".next"          -o -name ".nuxt"         \
+    -o -name ".output"       -o -name ".nitro"         -o -name ".turbo"        \
+    -o -name ".cache"        -o -name "coverage"                                \
+    -o -name ".dart_tool"    -o -name ".gradle"                                 \
+    -o -name "Pods"          -o -name ".symlinks"                               \
+    -o -name ".venv"         -o -name "__pycache__"                             \
+    -o -name ".pytest_cache" -o -name ".mypy_cache"    -o -name ".ruff_cache"   \
+    -o -name ".tox"                                                              \
+    -o -name ".svelte-kit"   -o -name ".astro"         -o -name ".parcel-cache" \
+    -o -name ".angular"      -o -name ".terraform"                              \
+    -o -name ".stack-work"   -o -name "dist-newstyle"                           \
+  \) -prune -print0 2>/dev/null || true) \
+| while IFS= read -r -d '' dir; do
+    # Paths with control characters would corrupt the tab/newline-separated data file
+    case "$dir" in
+      *$'\n'*|*$'\t'*)
+        printf '\r\033[K%bÜbersprungen (Steuerzeichen im Pfad):%b %q\n' "$YELLOW" "$RESET" "$dir" >&2
+        continue ;;
+    esac
+    kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
+    [[ -n "$kb" ]] || kb=0
+    printf '%s\tdelete\t%s\n' "$kb" "$dir"
+    _n=$((_n + 1))
+    printf '\rScanning %s... (%d gefunden)' "$TARGET" "$_n" >&2
+  done >> "$data_file"
+printf '\r\033[K' >&2
+
+# Conditional artifacts (generic names): deleted only if a stack marker matches OR the dir is gitignored
+_n=0
+printf 'Prüfe konditionale Ordner...' >&2
+(find "$TARGET" -type d \( \
+    -name "node_modules"     -o -name ".next"          -o -name ".nuxt"         \
+    -o -name ".output"       -o -name ".nitro"         -o -name ".turbo"        \
+    -o -name ".cache"        -o -name "coverage"                                \
+    -o -name ".dart_tool"    -o -name ".gradle"                                 \
+    -o -name "Pods"          -o -name ".symlinks"                               \
+    -o -name ".venv"         -o -name "__pycache__"                             \
+    -o -name ".pytest_cache" -o -name ".mypy_cache"    -o -name ".ruff_cache"   \
+    -o -name ".tox"                                                              \
+    -o -name ".svelte-kit"   -o -name ".astro"         -o -name ".parcel-cache" \
+    -o -name ".angular"      -o -name ".terraform"                              \
+    -o -name ".stack-work"   -o -name "dist-newstyle"                           \
+  \) -prune -o -type d \( \
+       -name "dist"    -o -name "build"  -o -name "out"                         \
+    -o -name "vendor"  -o -name "deps"   -o -name "obj"                         \
+    -o -name "venv"    -o -name "target"                                        \
+    -o -name ".build"  -o -name "_build"                                        \
+  \) -prune -print0 2>/dev/null || true) \
+| while IFS= read -r -d '' dir; do
+    case "$dir" in
+      *$'\n'*|*$'\t'*)
+        printf '\r\033[K%bÜbersprungen (Steuerzeichen im Pfad):%b %q\n' "$YELLOW" "$RESET" "$dir" >&2
+        continue ;;
+    esac
+    kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
+    [[ -n "$kb" ]] || kb=0
+    if has_marker "$dir" || is_gitignored "$dir"; then
+      printf '%s\tdelete\t%s\n' "$kb" "$dir"
+    else
+      printf '%s\tskip\t%s\n' "$kb" "$dir"
+    fi
+    _n=$((_n + 1))
+    printf '\rPrüfe konditionale Ordner... (%d geprüft)' "$_n" >&2
+  done >> "$data_file"
+printf '\r\033[K' >&2
+
+total_kb=$(awk -F'\t' '$2=="delete"{s+=$1} END{print s+0}' "$data_file")
+total_count=$(awk -F'\t' '$2=="delete"{c++} END{print c+0}' "$data_file")
+
+if [[ "$total_count" -eq 0 ]]; then
+  printf '\n%bKeine Artefakte gefunden.%b\n' "$GREEN" "$RESET"
+  exit 0
+fi
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  printf '\n%b[DRY RUN]%b Found %d artifact directories (%s):\n\n' \
+    "$BOLD" "$RESET" "$total_count" "$(format_size "$total_kb")"
+else
+  printf '\nFound %d artifact directories (%s):\n\n' \
+    "$total_count" "$(format_size "$total_kb")"
+fi
+
+awk -F'\t' '$2=="delete"' "$data_file" | sort -rn | while IFS=$'\t' read -r kb _ dir; do
+  printf '  %6s  %s\n' "$(format_size "$kb")" "$(display_path "$dir")"
+done
+
+awk -F'\t' '$2=="skip"' "$data_file" | sort -rn | while IFS=$'\t' read -r kb _ dir; do
+  printf '  %6s  %b[skipped — weder Marker noch gitignored]%b  %s\n' \
+    "$(format_size "$kb")" "$DIM" "$RESET" "$(display_path "$dir")"
+done
+
+printf '\nTotal reclaimable: %s\n' "$(format_size "$total_kb")"
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  printf 'Run with --delete to remove.\n'
+  exit 0
+fi
+
+# Delete mode
+if [[ "$DELETE_MODE" == "fast" ]]; then
+  printf '\n%b%bWARNUNG: rm -rf wird verwendet — NICHT wiederherstellbar!%b\n' \
+    "$BOLD" "$RED" "$RESET"
+fi
+
+read -r -p "$(printf '%d Verzeichnisse löschen? [y/N] ' "$total_count")" confirm
+[[ "$confirm" =~ ^[Yy]$ ]] || { echo "Abgebrochen."; exit 0; }
+
+# cut -f3- keeps the full path even if it contains further tab-like field content
+awk -F'\t' '$2=="delete"' "$data_file" | cut -f3- > "$tmpdir/to_delete"
+
+deleted=0
+failed=0
+while IFS= read -r dir; do
+  [[ -d "$dir" ]] || continue
+  if [[ "$DELETE_MODE" == "fast" ]]; then
+    if rm -rf "$dir" 2>/dev/null; then
+      deleted=$((deleted + 1))
+      printf '\rLösche... (%d/%d)' "$deleted" "$total_count" >&2
+    else
+      printf '%bFehler:%b %s\n' "$RED" "$RESET" "$(display_path "$dir")"
+      failed=$((failed + 1))
+    fi
+  else
+    if trash "$dir" 2>/dev/null; then
+      deleted=$((deleted + 1))
+      printf '\rLösche... (%d/%d)' "$deleted" "$total_count" >&2
+    else
+      printf '%bFehler:%b %s\n' "$RED" "$RESET" "$(display_path "$dir")"
+      failed=$((failed + 1))
+    fi
+  fi
+done < "$tmpdir/to_delete"
+printf '\r\033[K' >&2
+
+printf '\n%b%d Verzeichnisse gelöscht%b' "$GREEN" "$deleted" "$RESET"
+[[ "$failed" -gt 0 ]] && printf ', %b%d Fehler%b' "$RED" "$failed" "$RESET"
+printf '\n'

@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: dev-sizes [<verzeichnis>]\n'
+  printf 'Analysiert Speicherverbrauch durch Build-Artefakte. Löscht nichts.\n'
+  printf '  <verzeichnis>  Zu analysierendes Verzeichnis (Standard: ~/dev)\n'
+  printf '  --help, -h     Diese Hilfe anzeigen\n'
+  exit "${1:-1}"
+}
+
+TARGET="$HOME/dev"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h) usage 0 ;;
+    -*)        printf 'Unbekanntes Flag: %s\n' "$1"; usage ;;
+    *)         TARGET="$1" ;;
+  esac
+  shift
+done
+TARGET="${TARGET%/}"
+BOLD='\033[1m'
+RESET='\033[0m'
+
+format_size() {
+  LC_NUMERIC=C awk -v kb="$1" 'BEGIN {
+    if (kb >= 1048576) printf "%.1fG\n", kb/1048576
+    else if (kb >= 1024) printf "%.1fM\n", kb/1024
+    else printf "%dK\n", kb
+  }'
+}
+
+[[ -d "$TARGET" ]] || { printf 'Verzeichnis nicht gefunden: %s\n' "$TARGET"; exit 1; }
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+data_file="$tmpdir/data"
+
+# Single find pass: tab-separated "size TAB artifact_name TAB project_dir"
+_n=0
+printf 'Scanning %s...' "$TARGET" >&2
+(find "$TARGET" -type d \( \
+    -name "node_modules"     -o -name ".next"          -o -name ".nuxt"         \
+    -o -name ".output"       -o -name ".nitro"         -o -name ".turbo"        \
+    -o -name ".cache"        -o -name "coverage"       -o -name "out"           \
+    -o -name "target"        -o -name ".dart_tool"     -o -name ".gradle"       \
+    -o -name "Pods"          -o -name ".symlinks"                               \
+    -o -name "vendor"                                                            \
+    -o -name ".venv"         -o -name "venv"           -o -name "__pycache__"   \
+    -o -name ".pytest_cache" -o -name ".mypy_cache"    -o -name ".ruff_cache"   \
+    -o -name ".tox"                                                              \
+    -o -name ".svelte-kit"   -o -name ".astro"         -o -name ".parcel-cache" \
+    -o -name ".angular"                                                          \
+    -o -name "_build"        -o -name "deps"           -o -name ".terraform"    \
+    -o -name ".build"        -o -name "obj"                                     \
+    -o -name ".stack-work"   -o -name "dist-newstyle"                           \
+    -o -name "dist"          -o -name "build"                                   \
+  \) -prune -print0 2>/dev/null || true) \
+| while IFS= read -r -d '' dir; do
+    case "$dir" in
+      *$'\n'*|*$'\t'*)
+        printf '\r\033[KÜbersprungen (Steuerzeichen im Pfad): %q\n' "$dir" >&2
+        continue ;;
+    esac
+    kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
+    [[ -n "$kb" ]] || kb=0
+    name=$(basename "$dir")
+    rel="${dir#$TARGET/}"
+    project="$TARGET/${rel%%/*}"
+    printf '%s\t%s\t%s\n' "$kb" "$name" "$project"
+    _n=$((_n + 1))
+    printf '\rScanning %s... (%d gefunden)' "$TARGET" "$_n" >&2
+  done > "$data_file"
+printf '\r\033[K' >&2
+
+# --- Section 1: By type ---
+printf '\n%b── Artefakte nach Typ ───────────────────────────%b\n' "$BOLD" "$RESET"
+
+type_file="$tmpdir/type"
+awk -F'\t' '{sizes[$2]+=$1; counts[$2]++} END {
+  for (n in sizes) printf "%d\t%s\t%d\n", sizes[n], n, counts[n]
+}' "$data_file" | sort -rn > "$type_file"
+
+grand_total=0
+while IFS=$'\t' read -r kb name count; do
+  unit="Verzeichnisse"
+  [[ "$count" -eq 1 ]] && unit="Verzeichnis"
+  cond=""
+  case "$name" in
+    dist|build|out|vendor|deps|obj|venv|target|.build|_build) cond=" *" ;;
+  esac
+  printf '  %6s  %-20s (%d %s)%s\n' "$(format_size "$kb")" "$name" "$count" "$unit" "$cond"
+  grand_total=$((grand_total + kb))
+done < "$type_file"
+
+printf '\n  %bTotal Artefakte: %s%b\n' "$BOLD" "$(format_size "$grand_total")" "$RESET"
+printf '  * konditional: dev-clean löscht nur bei Marker-Datei oder gitignore-Treffer\n'
+
+# --- Section 2: Per project ---
+printf '\n%b── Pro Projekt (mit Artefakten) ─────────────────%b\n' "$BOLD" "$RESET"
+
+proj_file="$tmpdir/proj"
+awk -F'\t' '{sizes[$3]+=$1} END {
+  for (p in sizes) printf "%d\t%s\n", sizes[p], p
+}' "$data_file" | sort -rn > "$proj_file"
+
+while IFS=$'\t' read -r proj_kb project; do
+  printf '  %6s  %s\n' "$(format_size "$proj_kb")" "$project"
+
+  breakdown_file="$tmpdir/breakdown"
+  awk -F'\t' -v p="$project" '$3==p {sizes[$2]+=$1} END {
+    for (n in sizes) printf "%d\t%s\n", sizes[n], n
+  }' "$data_file" | sort -rn > "$breakdown_file"
+
+  total_types=$(wc -l < "$breakdown_file" | tr -d ' ')
+  line_num=0
+  while IFS=$'\t' read -r type_kb type_name; do
+    line_num=$((line_num + 1))
+    if [[ "$line_num" -eq "$total_types" ]]; then
+      prefix="   └─"
+    else
+      prefix="   ├─"
+    fi
+    printf '%s  %6s  %s\n' "$prefix" "$(format_size "$type_kb")" "$type_name"
+  done < "$breakdown_file"
+done < "$proj_file"
+
+# --- Section 3: Totals ---
+printf 'Berechne Gesamtgröße...' >&2
+dev_total=$(du -sk "$TARGET" 2>/dev/null | awk '{print $1}')
+printf '\r\033[K' >&2
+pct=$(LC_NUMERIC=C awk -v art="$grand_total" -v tot="$dev_total" 'BEGIN { printf "%.0f", (tot>0 ? art/tot*100 : 0) }')
+printf '\n%b── Gesamt ────────────────────────────────────────%b\n' "$BOLD" "$RESET"
+printf '  Artefakte:   %s (%s%% von %s)\n' \
+  "$(format_size "$grand_total")" "$pct" "$(format_size "$dev_total")"
+printf '  %s total: %s\n' "$TARGET" "$(format_size "$dev_total")"

@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: dev-cache-clean\n'
+  printf 'Bereinigt Package-Manager- und Tool-Caches (Homebrew, Yarn, npm, pip,\n'
+  printf 'Composer, Bun, Docker, Flutter, Xcode DerivedData, iOS Simulatoren).\n'
+  printf 'Docker und DerivedData fragen vor dem Löschen nach Bestätigung.\n'
+  printf '  --help, -h  Diese Hilfe anzeigen\n'
+  exit "${1:-1}"
+}
+
+case "${1:-}" in
+  --help|-h) usage 0 ;;
+  ?*)        printf 'Unbekanntes Argument: %s\n' "$1"; usage ;;
+esac
+
+TARGET="$HOME/dev"
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+RESET='\033[0m'
+
+section() { printf '\n%b── %s ──%b\n' "$BOLD" "$1" "$RESET"; }
+ok()      { printf '%b✓%b %s\n' "$GREEN" "$RESET" "$1"; }
+skip()    { printf '%b[skipped — not installed]%b %s\n' "$YELLOW" "$RESET" "$1"; }
+
+# 1. Homebrew
+section "Homebrew"
+if command -v brew &>/dev/null; then
+  brew cleanup || true
+  ok "brew cleanup done"
+else
+  skip "brew"
+fi
+
+# 2. Yarn
+section "Yarn"
+if command -v yarn &>/dev/null; then
+  yarn cache clean || true
+  ok "yarn cache cleaned"
+else
+  skip "yarn"
+fi
+
+# 3. npm
+section "npm"
+if command -v npm &>/dev/null; then
+  npm cache clean --force || true
+  ok "npm cache cleaned"
+else
+  skip "npm"
+fi
+
+# 4. pip
+section "pip"
+if command -v pip3 &>/dev/null; then
+  pip3 cache purge || true
+  ok "pip cache geleert"
+elif command -v pip &>/dev/null; then
+  pip cache purge || true
+  ok "pip cache geleert"
+else
+  skip "pip"
+fi
+
+# 5. Composer
+section "Composer"
+if command -v composer &>/dev/null; then
+  composer clear-cache || true
+  ok "Composer cache geleert"
+else
+  skip "composer"
+fi
+
+# 6. Bun
+section "Bun"
+if command -v bun &>/dev/null; then
+  bun pm cache rm || true
+  ok "bun cache cleaned"
+else
+  skip "bun"
+fi
+
+# 7. Docker
+section "Docker"
+if command -v docker &>/dev/null && docker info &>/dev/null; then
+  docker system df
+  printf '\n%b%bWARNUNG: Löscht ALLE unbenutzten Images, Container und Volumes.%b\n' \
+    "$BOLD" "$RED" "$RESET"
+  read -r -p "Weiter? [y/N] " confirm
+  if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    docker system prune -a --volumes --force
+    ok "Docker bereinigt"
+  else
+    echo "Übersprungen."
+  fi
+else
+  skip "docker (nicht installiert oder nicht gestartet)"
+fi
+
+# 8. Flutter
+section "Flutter"
+if command -v flutter &>/dev/null; then
+  flutter_dirs=()
+  while IFS= read -r -d '' f; do
+    flutter_dirs+=("$(dirname "$f")")
+  done < <(find "$TARGET" -name "pubspec.yaml" -not -path "*/.*" -print0 2>/dev/null) || true
+
+  total=${#flutter_dirs[@]}
+  if [[ "$total" -eq 0 ]]; then
+    echo "Keine Flutter-Projekte gefunden."
+  else
+    failed_flutter=0
+    for i in "${!flutter_dirs[@]}"; do
+      dir="${flutter_dirs[$i]}"
+      printf '[%d/%d] flutter clean in %s\n' "$((i + 1))" "$total" "$dir"
+      (cd "$dir" && flutter clean) || {
+        printf '%bFehler in %s, übersprungen%b\n' "$RED" "$dir" "$RESET"
+        failed_flutter=$((failed_flutter + 1))
+      }
+    done
+    if [[ "$failed_flutter" -eq 0 ]]; then
+      ok "Flutter-Projekte bereinigt"
+    else
+      printf '%b%d Projekt(e) fehlgeschlagen%b\n' "$RED" "$failed_flutter" "$RESET"
+    fi
+  fi
+else
+  skip "flutter"
+fi
+
+# 9. Xcode DerivedData
+section "Xcode DerivedData"
+if command -v xcodebuild &>/dev/null; then
+  derived="$HOME/Library/Developer/Xcode/DerivedData"
+  if [[ -d "$derived" ]]; then
+    size=$(du -sh "$derived" 2>/dev/null | awk '{print $1}') || size="(Größe unbekannt)"
+    printf 'Größe: %s (%s)\n' "$size" "$derived"
+    read -r -p "Löschen? [y/N] " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+      rm -rf "$derived"
+      ok "DerivedData gelöscht"
+    else
+      echo "Übersprungen."
+    fi
+  else
+    echo "DerivedData-Verzeichnis nicht gefunden."
+  fi
+else
+  skip "xcodebuild"
+fi
+
+# 10. iOS Simulatoren
+section "iOS Simulatoren"
+if command -v xcrun &>/dev/null; then
+  printf 'Das kann einen Moment dauern...\n'
+  xcrun simctl delete unavailable || true
+  ok "Unavailable Simulatoren gelöscht"
+else
+  skip "xcrun"
+fi
+
+printf '\n%b%bFertig!%b\n' "$GREEN" "$BOLD" "$RESET"
