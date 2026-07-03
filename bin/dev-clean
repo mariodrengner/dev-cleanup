@@ -203,6 +203,11 @@ if [[ "$DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
+if [[ "$total_count" -eq 0 ]]; then
+  printf 'Nothing to delete.\n'
+  exit 0
+fi
+
 # Delete mode
 if [[ "$DELETE_MODE" == "fast" ]]; then
   printf '\n%b%bWARNING: rm -rf will be used — NOT recoverable!%b\n' \

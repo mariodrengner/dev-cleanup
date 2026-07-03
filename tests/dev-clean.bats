@@ -128,6 +128,16 @@ teardown() { rm -rf "$TMP"; }
   [[ "$output" == *"[skipped — no marker, not gitignored]"* ]]
 }
 
+@test "--delete with only skipped entries exits without prompting" {
+  mkdir -p "$WS/web/dist"; git -C "$WS/web" init -q
+  run "$BIN/dev-clean" --delete "$WS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[skipped — no marker, not gitignored]"* ]]
+  [[ "$output" == *"Nothing to delete."* ]]
+  [[ "$output" != *"Delete 0 directories"* ]]
+  [ -d "$WS/web/dist" ]
+}
+
 @test "dist inside node_modules is not scanned" {
   mkdir -p "$WS/proj/node_modules/pkg/dist"
   run "$BIN/dev-clean" "$WS"
