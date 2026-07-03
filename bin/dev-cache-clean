@@ -3,16 +3,16 @@ set -euo pipefail
 
 usage() {
   printf 'Usage: dev-cache-clean\n'
-  printf 'Bereinigt Package-Manager- und Tool-Caches (Homebrew, Yarn, npm, pip,\n'
-  printf 'Composer, Bun, Docker, Flutter, Xcode DerivedData, iOS Simulatoren).\n'
-  printf 'Docker und DerivedData fragen vor dem Löschen nach Bestätigung.\n'
-  printf '  --help, -h  Diese Hilfe anzeigen\n'
+  printf 'Cleans package manager and tool caches (Homebrew, Yarn, npm, pip,\n'
+  printf 'Composer, Bun, Docker, Flutter, Xcode DerivedData, iOS simulators).\n'
+  printf 'Docker and DerivedData ask for confirmation before deleting.\n'
+  printf '  --help, -h  Show this help\n'
   exit "${1:-1}"
 }
 
 case "${1:-}" in
   --help|-h) usage 0 ;;
-  ?*)        printf 'Unbekanntes Argument: %s\n' "$1"; usage ;;
+  ?*)        printf 'Unknown argument: %s\n' "$1"; usage ;;
 esac
 
 TARGET="$HOME/dev"
@@ -57,10 +57,10 @@ fi
 section "pip"
 if command -v pip3 &>/dev/null; then
   pip3 cache purge || true
-  ok "pip cache geleert"
+  ok "pip cache purged"
 elif command -v pip &>/dev/null; then
   pip cache purge || true
-  ok "pip cache geleert"
+  ok "pip cache purged"
 else
   skip "pip"
 fi
@@ -69,7 +69,7 @@ fi
 section "Composer"
 if command -v composer &>/dev/null; then
   composer clear-cache || true
-  ok "Composer cache geleert"
+  ok "Composer cache cleared"
 else
   skip "composer"
 fi
@@ -87,17 +87,17 @@ fi
 section "Docker"
 if command -v docker &>/dev/null && docker info &>/dev/null; then
   docker system df
-  printf '\n%b%bWARNUNG: Löscht ALLE unbenutzten Images, Container und Volumes.%b\n' \
+  printf '\n%b%bWARNING: Deletes ALL unused images, containers, and volumes.%b\n' \
     "$BOLD" "$RED" "$RESET"
-  read -r -p "Weiter? [y/N] " confirm
+  read -r -p "Continue? [y/N] " confirm
   if [[ "$confirm" =~ ^[Yy]$ ]]; then
     docker system prune -a --volumes --force
-    ok "Docker bereinigt"
+    ok "Docker cleaned"
   else
-    echo "Übersprungen."
+    echo "Skipped."
   fi
 else
-  skip "docker (nicht installiert oder nicht gestartet)"
+  skip "docker (not installed or not running)"
 fi
 
 # 8. Flutter
@@ -110,21 +110,21 @@ if command -v flutter &>/dev/null; then
 
   total=${#flutter_dirs[@]}
   if [[ "$total" -eq 0 ]]; then
-    echo "Keine Flutter-Projekte gefunden."
+    echo "No Flutter projects found."
   else
     failed_flutter=0
     for i in "${!flutter_dirs[@]}"; do
       dir="${flutter_dirs[$i]}"
       printf '[%d/%d] flutter clean in %s\n' "$((i + 1))" "$total" "$dir"
       (cd "$dir" && flutter clean) || {
-        printf '%bFehler in %s, übersprungen%b\n' "$RED" "$dir" "$RESET"
+        printf '%bError in %s, skipped%b\n' "$RED" "$dir" "$RESET"
         failed_flutter=$((failed_flutter + 1))
       }
     done
     if [[ "$failed_flutter" -eq 0 ]]; then
-      ok "Flutter-Projekte bereinigt"
+      ok "Flutter projects cleaned"
     else
-      printf '%b%d Projekt(e) fehlgeschlagen%b\n' "$RED" "$failed_flutter" "$RESET"
+      printf '%b%d project(s) failed%b\n' "$RED" "$failed_flutter" "$RESET"
     fi
   fi
 else
@@ -136,17 +136,17 @@ section "Xcode DerivedData"
 if command -v xcodebuild &>/dev/null; then
   derived="$HOME/Library/Developer/Xcode/DerivedData"
   if [[ -d "$derived" ]]; then
-    size=$(du -sh "$derived" 2>/dev/null | awk '{print $1}') || size="(Größe unbekannt)"
-    printf 'Größe: %s (%s)\n' "$size" "$derived"
-    read -r -p "Löschen? [y/N] " confirm
+    size=$(du -sh "$derived" 2>/dev/null | awk '{print $1}') || size="(size unknown)"
+    printf 'Size: %s (%s)\n' "$size" "$derived"
+    read -r -p "Delete? [y/N] " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
       rm -rf "$derived"
-      ok "DerivedData gelöscht"
+      ok "DerivedData deleted"
     else
-      echo "Übersprungen."
+      echo "Skipped."
     fi
   else
-    echo "DerivedData-Verzeichnis nicht gefunden."
+    echo "DerivedData directory not found."
   fi
 else
   skip "xcodebuild"
@@ -155,11 +155,11 @@ fi
 # 10. iOS Simulatoren
 section "iOS Simulatoren"
 if command -v xcrun &>/dev/null; then
-  printf 'Das kann einen Moment dauern...\n'
+  printf 'This may take a moment...\n'
   xcrun simctl delete unavailable || true
-  ok "Unavailable Simulatoren gelöscht"
+  ok "Unavailable simulators deleted"
 else
   skip "xcrun"
 fi
 
-printf '\n%b%bFertig!%b\n' "$GREEN" "$BOLD" "$RESET"
+printf '\n%b%bDone!%b\n' "$GREEN" "$BOLD" "$RESET"
