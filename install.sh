@@ -57,6 +57,7 @@ done
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
   *) printf '\nNote: %s is not in your PATH. Add this to your shell profile:\n' "$PREFIX"
+     # shellcheck disable=SC2016  # $PATH must appear literally in the printed hint
      printf '  export PATH="%s:$PATH"\n' "$PREFIX" ;;
 esac
 printf 'Done.\n'

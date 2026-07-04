@@ -65,7 +65,7 @@ printf 'Scanning %s...' "$TARGET" >&2
     kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
     [[ -n "$kb" ]] || kb=0
     name=$(basename "$dir")
-    rel="${dir#$TARGET/}"
+    rel="${dir#"$TARGET"/}"
     project="$TARGET/${rel%%/*}"
     printf '%s\t%s\t%s\n' "$kb" "$name" "$project"
     _n=$((_n + 1))
