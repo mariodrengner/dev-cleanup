@@ -26,10 +26,19 @@ teardown() { rm -rf "$TMP"; }
   [ -d "$WS/proj/node_modules" ]
 }
 
-@test "no artifacts found exits 0" {
+@test "no artifacts found exits 0 with consistent summary" {
   run "$BIN/dev-clean" "$WS"
   [ "$status" -eq 0 ]
+  [[ "$output" == *"Found 0 artifact directories (0K)"* ]]
+  [[ "$output" == *"Total reclaimable: 0K"* ]]
   [[ "$output" == *"No artifacts found"* ]]
+}
+
+@test "--delete with no artifacts prints summary and nothing to delete" {
+  run "$BIN/dev-clean" --delete "$WS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Found 0 artifact directories (0K)"* ]]
+  [[ "$output" == *"Nothing to delete."* ]]
 }
 
 @test "--delete removes node_modules after confirmation" {
@@ -46,6 +55,86 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"Aborted"* ]]
   [ -d "$WS/proj/node_modules" ]
+}
+
+@test "--delete --yes removes without reading stdin" {
+  mkdir -p "$WS/proj/node_modules"
+  run bash -c "'$BIN/dev-clean' --delete --yes '$WS' </dev/null"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"1 directories deleted"* ]]
+  [[ "$output" != *"Delete 1 directories?"* ]]
+  [ ! -d "$WS/proj/node_modules" ]
+}
+
+@test "-y is an alias for --yes" {
+  mkdir -p "$WS/proj/node_modules"
+  run bash -c "'$BIN/dev-clean' -y --delete '$WS' </dev/null"
+  [ "$status" -eq 0 ]
+  [ ! -d "$WS/proj/node_modules" ]
+}
+
+@test "--delete on EOF stdin aborts cleanly" {
+  mkdir -p "$WS/proj/node_modules"
+  run bash -c "'$BIN/dev-clean' --delete '$WS' </dev/null"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Aborted"* ]]
+  [ -d "$WS/proj/node_modules" ]
+}
+
+@test "--yes cannot be combined with --fast" {
+  mkdir -p "$WS/proj/node_modules"
+  run "$BIN/dev-clean" --delete --fast --yes "$WS"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--yes cannot be combined with --fast"* ]]
+  [ -d "$WS/proj/node_modules" ]
+}
+
+@test "--yes without --delete stays a dry-run" {
+  mkdir -p "$WS/proj/node_modules"
+  run "$BIN/dev-clean" --yes "$WS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[DRY RUN]"* ]]
+  [ -d "$WS/proj/node_modules" ]
+}
+
+# --- Mehrere Ziele ---
+
+@test "two targets are both scanned" {
+  mkdir -p "$WS/a/node_modules" "$WS/b/node_modules"
+  run "$BIN/dev-clean" "$WS/a" "$WS/b"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Found 2 artifact directories"* ]]
+  [[ "$output" == *"/a/node_modules"* ]]
+  [[ "$output" == *"/b/node_modules"* ]]
+}
+
+@test "two targets are both cleaned with --delete --yes" {
+  mkdir -p "$WS/a/node_modules" "$WS/b/.venv"
+  run "$BIN/dev-clean" --delete --yes "$WS/a" "$WS/b"
+  [ "$status" -eq 0 ]
+  [ ! -d "$WS/a/node_modules" ]
+  [ ! -d "$WS/b/.venv" ]
+}
+
+@test "overlapping targets list each directory once" {
+  mkdir -p "$WS/a/node_modules"
+  run "$BIN/dev-clean" "$WS" "$WS/a"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Found 1 artifact directories"* ]]
+}
+
+@test "a guarded target among several aborts before scanning" {
+  mkdir -p "$WS/a/node_modules"
+  run "$BIN/dev-clean" --delete --yes "$WS/a" "$HOME"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not allowed as a target"* ]]
+  [ -d "$WS/a/node_modules" ]
+}
+
+@test "a missing target among several aborts" {
+  run "$BIN/dev-clean" "$WS" "$WS/nope"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Directory not found"* ]]
 }
 
 # --- Marker-Erkennung ---
@@ -183,7 +272,13 @@ teardown() { rm -rf "$TMP"; }
 
 @test "missing trash aborts before scanning" {
   mkdir -p "$WS/proj/node_modules"
-  run env PATH="/usr/bin:/bin" HOME="$HOME" "$BIN/dev-clean" --delete "$WS"
+  # macOS 15+ ships /usr/bin/trash, so PATH=/usr/bin:/bin is not enough:
+  # mirror the system tools without trash
+  NOTRASH="$TMP/notrash"; mkdir -p "$NOTRASH"
+  ln -s /usr/bin/* "$NOTRASH/" 2>/dev/null || true
+  ln -s /bin/* "$NOTRASH/" 2>/dev/null || true
+  rm -f "$NOTRASH/trash"
+  run env PATH="$NOTRASH" HOME="$HOME" "$BIN/dev-clean" --delete "$WS" </dev/null
   [ "$status" -eq 1 ]
   [[ "$output" == *"trash is not installed"* ]]
   [ -d "$WS/proj/node_modules" ]

@@ -38,8 +38,9 @@ command — macOS: `brew install trash`, Linux: `trash-cli` — or use `--fast`.
 
 ```bash
 dev-cleanup sizes [<dir>]     # analyze artifact disk usage (read-only)
-dev-cleanup clean [<dir>]     # dry-run: show what would be deleted
+dev-cleanup clean [<dir>...]  # dry-run: show what would be deleted
 dev-cleanup clean --delete    # delete via trash (recoverable)
+dev-cleanup clean --delete --yes a b   # no prompt (scripts/agents; not with --fast)
 dev-cleanup clean --delete --fast   # rm -rf (warning + confirmation)
 dev-cleanup cache             # clean package manager & tool caches
 dev-cleanup all [<dir>]       # sizes → clean --delete (safe) → cache
@@ -96,7 +97,8 @@ unavailable iOS simulators.
 ## Safety model
 
 - **Dry-run by default** — `clean` deletes nothing without `--delete`
-- **trash by default** — deletions are recoverable; `rm -rf` requires `--fast` plus a red warning and confirmation
+- **trash by default** — deletions are recoverable; `rm -rf` requires `--fast` plus a red warning and confirmation (`--yes` is rejected together with `--fast`)
+- **Non-interactive use** — `--yes` answers the prompts; without it, a closed stdin counts as "no" and aborts cleanly
 - **Target guards** — `/` and `$HOME` are rejected; targets outside `$HOME` require extra confirmation
 - **Marker/gitignore checks** — generic directory names need proof before deletion
 - **Control-character defense** — paths containing tabs/newlines are skipped (they could corrupt the delete list); non-printable characters are masked in output
