@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET="$HOME/dev"
+TARGETS=()
 DRY_RUN=true
 DELETE_MODE="safe"
 MODE_FLAG_SET=false
+ASSUME_YES=false
 
 BOLD='\033[1m'
 RED='\033[0;31m'
@@ -22,12 +23,13 @@ format_size() {
 }
 
 usage() {
-  printf 'Usage: dev-clean [--delete [--safe|--fast]] [<directory>]\n'
+  printf 'Usage: dev-clean [--delete [--safe|--fast] [--yes]] [<directory>...]\n'
   printf 'Lists and removes build artifacts. Dry-run unless --delete is given.\n'
-  printf '  <directory>  Directory to clean (default: ~/dev)\n'
+  printf '  <directory>  Directories to clean (default: ~/dev)\n'
   printf '  --delete     Actually delete (default: dry-run)\n'
   printf '  --safe       Use trash, recoverable (default with --delete)\n'
   printf '  --fast       Use rm -rf (with warning, not recoverable)\n'
+  printf '  --yes, -y    Answer confirmations with yes (not with --fast)\n'
   printf '  --help, -h   Show this help\n'
   exit "${1:-1}"
 }
@@ -37,26 +39,45 @@ while [[ $# -gt 0 ]]; do
     --delete)  DRY_RUN=false ;;
     --safe)    DELETE_MODE="safe"; MODE_FLAG_SET=true ;;
     --fast)    DELETE_MODE="fast"; MODE_FLAG_SET=true ;;
+    --yes|-y)  ASSUME_YES=true ;;
     --help|-h) usage 0 ;;
     -*)        printf 'Unknown flag: %s\n' "$1"; usage ;;
-    *)         TARGET="$1" ;;
+    *)         TARGETS+=("$1") ;;
   esac
   shift
 done
 
-[[ "$TARGET" != "/" ]] && TARGET="${TARGET%/}"
-[[ -d "$TARGET" ]] || { printf 'Directory not found: %s\n' "$TARGET"; exit 1; }
-TARGET=$(cd "$TARGET" && pwd)
+[[ ${#TARGETS[@]} -gt 0 ]] || TARGETS=("$HOME/dev")
 
-if [[ "$TARGET" == "/" || "$TARGET" == "$HOME" ]]; then
-  printf '%bError:%b %s is not allowed as a target.\n' "$RED" "$RESET" "$TARGET"
+if [[ "$ASSUME_YES" == "true" && "$DELETE_MODE" == "fast" ]]; then
+  printf '%bError:%b --yes cannot be combined with --fast (rm -rf always asks).\n' "$RED" "$RESET"
   exit 1
 fi
-if [[ "$TARGET" != "$HOME"/* && "$DRY_RUN" == "false" ]]; then
-  printf '%bWarning:%b target is outside %s: %s\n' "$YELLOW" "$RESET" "$HOME" "$TARGET"
-  read -r -p "Continue anyway? [y/N] " confirm
-  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
-fi
+
+# Asks a yes/no question; --yes answers it, EOF on stdin counts as no
+confirm() {
+  local answer=""
+  [[ "$ASSUME_YES" == "true" ]] && return 0
+  read -r -p "$1 [y/N] " answer || true
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+# Every target is validated before anything is scanned
+for i in "${!TARGETS[@]}"; do
+  t="${TARGETS[$i]}"
+  [[ "$t" != "/" ]] && t="${t%/}"
+  [[ -d "$t" ]] || { printf 'Directory not found: %s\n' "$t"; exit 1; }
+  t=$(cd "$t" && pwd)
+  if [[ "$t" == "/" || "$t" == "$HOME" ]]; then
+    printf '%bError:%b %s is not allowed as a target.\n' "$RED" "$RESET" "$t"
+    exit 1
+  fi
+  if [[ "$t" != "$HOME"/* && "$DRY_RUN" == "false" ]]; then
+    printf '%bWarning:%b target is outside %s: %s\n' "$YELLOW" "$RESET" "$HOME" "$t"
+    confirm "Continue anyway?" || { echo "Aborted."; exit 0; }
+  fi
+  TARGETS[i]="$t"
+done
 
 if [[ "$DRY_RUN" == "true" && "$MODE_FLAG_SET" == "true" ]]; then
   printf '%bNote:%b --safe/--fast only take effect together with --delete (currently dry-run).\n' "$YELLOW" "$RESET"
@@ -102,8 +123,8 @@ touch "$data_file"
 
 # Always-delete artifacts (unambiguous names)
 _n=0
-printf 'Scanning %s...' "$TARGET" >&2
-(find "$TARGET" -type d \( \
+printf 'Scanning %s...' "${TARGETS[*]}" >&2
+(find "${TARGETS[@]}" -type d \( \
     -name "node_modules"     -o -name ".next"          -o -name ".nuxt"         \
     -o -name ".output"       -o -name ".nitro"         -o -name ".turbo"        \
     -o -name ".cache"        -o -name "coverage"                                \
@@ -127,14 +148,14 @@ printf 'Scanning %s...' "$TARGET" >&2
     [[ -n "$kb" ]] || kb=0
     printf '%s\tdelete\t%s\n' "$kb" "$dir"
     _n=$((_n + 1))
-    printf '\rScanning %s... (%d found)' "$TARGET" "$_n" >&2
+    printf '\rScanning %s... (%d found)' "${TARGETS[*]}" "$_n" >&2
   done >> "$data_file"
 printf '\r\033[K' >&2
 
 # Conditional artifacts (generic names): deleted only if a stack marker matches OR the dir is gitignored
 _n=0
 printf 'Checking conditional directories...' >&2
-(find "$TARGET" -type d \( \
+(find "${TARGETS[@]}" -type d \( \
     -name "node_modules"     -o -name ".next"          -o -name ".nuxt"         \
     -o -name ".output"       -o -name ".nitro"         -o -name ".turbo"        \
     -o -name ".cache"        -o -name "coverage"                                \
@@ -170,21 +191,22 @@ printf 'Checking conditional directories...' >&2
   done >> "$data_file"
 printf '\r\033[K' >&2
 
+# Overlapping targets find the same directory twice; keep the first entry per path
+awk -F'\t' '!seen[$3]++' "$data_file" > "$tmpdir/data_unique"
+data_file="$tmpdir/data_unique"
+
 total_kb=$(awk -F'\t' '$2=="delete"{s+=$1} END{print s+0}' "$data_file")
 total_count=$(awk -F'\t' '$2=="delete"{c++} END{print c+0}' "$data_file")
 total_skip=$(awk -F'\t' '$2=="skip"{c++} END{print c+0}' "$data_file")
 
-if [[ "$total_count" -eq 0 && "$total_skip" -eq 0 ]]; then
-  printf '\n%bNo artifacts found.%b\n' "$GREEN" "$RESET"
-  exit 0
-fi
-
+# The same summary line is printed with or without findings, so callers can parse it
+[[ "$total_count" -eq 0 && "$total_skip" -eq 0 ]] && list_end='.' || list_end=$':\n'
 if [[ "$DRY_RUN" == "true" ]]; then
-  printf '\n%b[DRY RUN]%b Found %d artifact directories (%s):\n\n' \
-    "$BOLD" "$RESET" "$total_count" "$(format_size "$total_kb")"
+  printf '\n%b[DRY RUN]%b Found %d artifact directories (%s)%s\n' \
+    "$BOLD" "$RESET" "$total_count" "$(format_size "$total_kb")" "$list_end"
 else
-  printf '\nFound %d artifact directories (%s):\n\n' \
-    "$total_count" "$(format_size "$total_kb")"
+  printf '\nFound %d artifact directories (%s)%s\n' \
+    "$total_count" "$(format_size "$total_kb")" "$list_end"
 fi
 
 awk -F'\t' '$2=="delete"' "$data_file" | sort -rn | while IFS=$'\t' read -r kb _ dir; do
@@ -197,6 +219,12 @@ awk -F'\t' '$2=="skip"' "$data_file" | sort -rn | while IFS=$'\t' read -r kb _ d
 done
 
 printf '\nTotal reclaimable: %s\n' "$(format_size "$total_kb")"
+
+if [[ "$total_count" -eq 0 && "$total_skip" -eq 0 ]]; then
+  printf '%bNo artifacts found.%b\n' "$GREEN" "$RESET"
+  [[ "$DRY_RUN" == "true" ]] || printf 'Nothing to delete.\n'
+  exit 0
+fi
 
 if [[ "$DRY_RUN" == "true" ]]; then
   printf 'Run with --delete to remove.\n'
@@ -214,8 +242,7 @@ if [[ "$DELETE_MODE" == "fast" ]]; then
     "$BOLD" "$RED" "$RESET"
 fi
 
-read -r -p "$(printf 'Delete %d directories? [y/N] ' "$total_count")" confirm
-[[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+confirm "$(printf 'Delete %d directories?' "$total_count")" || { printf '\nAborted.\n'; exit 0; }
 
 # cut -f3- keeps the full path even if it contains further tab-like field content
 awk -F'\t' '$2=="delete"' "$data_file" | cut -f3- > "$tmpdir/to_delete"
